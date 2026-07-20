@@ -14,7 +14,7 @@ Usage:
   fjscan_static.py --json <path>              # machine-readable output
 Exit code 2 if any EXPOSED artifact is found (useful as a CI/pipeline gate).
 """
-import io, json, os, re, sys, zipfile
+import concurrent.futures, io, json, os, re, sys, zipfile
 
 VULN_LOW  = (1, 2, 66)   # PoC-tested lower bound
 VULN_HIGH = (1, 2, 83)   # last 1.x release
@@ -168,16 +168,27 @@ def walk(paths):
 
 def main(argv):
     as_json = False
+    threads = 8
     args = []
-    for a in argv:
+    i = 0
+    while i < len(argv):
+        a = argv[i]
         if a == '--json':
             as_json = True
+        elif a == '--threads':
+            i += 1; threads = int(argv[i])
+        elif a.startswith('--threads='):
+            threads = int(a.split('=', 1)[1])
         else:
             args.append(a)
+        i += 1
     if not args:
         print(__doc__); return 1
 
-    results = [r for r in (scan_artifact(a) for a in walk(args)) if r]
+    files = list(walk(args))
+    workers = max(1, min(threads, len(files) or 1))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        results = [r for r in pool.map(scan_artifact, files) if r]
     exposed = [r for r in results if r['verdict'] == 'EXPOSED']
 
     if as_json:

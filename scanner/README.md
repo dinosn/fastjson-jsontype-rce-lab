@@ -50,7 +50,9 @@ python3 fjscan_probe.py --collaborator <collab> --targets domains.txt --path /ap
 cat domains.txt | python3 fjscan_probe.py --collaborator <collab> --targets -
 ```
 Nest the probe in a field with `--wrap '{"name":{{P}}}'`. Each target gets a unique token, so
-callbacks map back to the exact domain. Exit 2 if any target calls back.
+callbacks map back to the exact domain. Requests are sent **concurrently** — tune with
+`--threads N` (default 20). Exit 2 if any target calls back. `fjscan_static.py` is likewise
+parallel (`--threads N`, default 8) for large artifact trees.
 
 **Bulk payloads for manual Burp testing** — `fjpayload.py --targets-file` emits one payload per
 domain with a stable per-target token (`fj<sha1>`):
