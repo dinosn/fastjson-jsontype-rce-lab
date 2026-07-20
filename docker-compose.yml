@@ -1,0 +1,23 @@
+# fastjson @JSONType remote-class-load RCE lab.
+#   attacker  — serves the crafted malicious jar (reached by the target as "attacker")
+#   target    — vulnerable app; POST JSON to http://localhost:8080/parse
+#
+#   docker compose up -d --build
+#   bash exploit/exploit.sh
+#   docker compose down -v
+services:
+  attacker:
+    build: ./attacker
+    container_name: fj-attacker
+    networks: [labnet]
+
+  target:
+    build: ./target
+    container_name: fj-target
+    depends_on: [attacker]
+    ports:
+      - "127.0.0.1:8080:8080"    # bound to loopback — do not expose this lab publicly
+    networks: [labnet]
+
+networks:
+  labnet:
