@@ -63,6 +63,8 @@ POST https://svc.example/v1/ingest
 | `--probe-type <t>` | `jsontype` | `jsontype` = RCE path (`jar:http` int-IP); `dns` = `Inet4Address` OOB via a **dotted** host (**Collaborator-compatible**, confirms fastjson+egress); `both` |
 | `--targets <file\|->` | — | target list; `-` reads stdin (**required**) |
 | `--threads N` | `20` | concurrent request workers |
+| `--header 'K: V'` | — | extra request header (repeatable); a browser `--user-agent` is sent by default so CDN/WAFs don't `405` a bare client |
+| `--baseline '{"a":1}'` | — | also send a benign control body per target — a normal app response to the baseline but a block on the probe = WAF filtering `@type` |
 | `--scheme` / `--target-port` / `--path` | `http` / — / `/parse` | how bare domains are expanded |
 | `--method` | `POST` | default HTTP method |
 | `--wrap '{"u":{{P}}}'` | `{{P}}` | nest the probe object inside a field |

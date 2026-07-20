@@ -71,6 +71,14 @@ prefix encodes which target called back. For the RCE-path (`jsontype`) callback 
 listener addressable by a **raw IPv4** (encoded as an integer), since a dotted Collaborator host
 cannot survive the sink.
 
+**CDN/WAF-fronted targets** (common on public endpoints): bare HTTP clients often get a
+`405`/`403` *before* the request reaches the app, so `@type` is never parsed — an inconclusive
+result, not a clean bill of health. A browser `User-Agent` is sent by default; add
+`--header 'K: V'` (repeatable, e.g. `Origin`, `Referer`, cookies) and `--baseline '{"a":1}'` to
+send a benign control body per target. If the **baseline** gets a normal app response
+(`200`/`400`/`500`) but the **probe** is blocked, a WAF is filtering the `@type` — try payload
+obfuscation. If **both** are blocked, it's the CDN/path/method, not the app.
+
 **Bulk payloads for manual Burp testing** — `fjpayload.py --targets-file` emits one payload per
 domain with a stable per-target token (`fj<sha1>`):
 ```
@@ -99,8 +107,8 @@ use a private Collaborator / interactsh reachable by IP.
    `-Dfastjson.parser.safeMode=true`; restrict egress; move to JDK 9+; migrate off fastjson 1.x.
 
 ## Validation
-Proven on the lab against a true-positive (Spring Boot `LaunchedURLClassLoader` +
-`parseObject(body,Dto.class)`) and true-negative (plain AppClassLoader): static → EXPOSED
-vs FASTJSON_NO_SB; probe → VULNERABLE vs no-callback. Test servers: `VulnServer.java` /
-`SafeServer.java` (lab `/tmp/`), harness `a JDK 8 test host`.
+Proven against a true-positive (Spring Boot `LaunchedURLClassLoader` +
+`parseObject(body,Dto.class)`) and a true-negative (plain AppClassLoader) on a JDK 8 test host:
+static → `EXPOSED` vs `FASTJSON_NO_SB`; probe → `VULNERABLE` vs `no-callback`. Reproduce the
+targets with the Docker lab in this repo (`make up`).
 ```
