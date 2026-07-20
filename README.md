@@ -19,11 +19,69 @@ you own or are explicitly permitted to test. The lab target binds to `127.0.0.1`
 payload's default action is a benign `id` written to a file. Do not point the exploit or the
 active scanner at systems you do not own. You are responsible for how you use this.
 
-## Requirements
-- Docker + Docker Compose
-- Outbound access to Maven Central (first build only, to fetch fastjson / spring-boot-loader / asm)
+## Scan your own environment
 
-## Quick start
+The [`scanner/`](scanner/) directory ships three **dependency-free Python 3** tools (no pip
+installs). Both scanners are **multithreaded** and take target/domain lists from a file.
+
+- **`fjscan_static.py`** — inventory jars/wars/ears for the vulnerable combination
+  (fastjson 1.2.66–83 × Spring Boot fat-jar loader). CI-gate friendly (exit 2 on `EXPOSED`).
+- **`fjscan_probe.py`** — active, **safe** reachability check: fires the `@type` at a canary
+  you control (built-in listener **or** Burp Collaborator / interactsh) and correlates the
+  SSRF callback. Serves nothing → SSRF only, never RCE.
+- **`fjpayload.py`** — generate ready payloads (single or bulk) for Burp Repeater / curl.
+
+```bash
+# 1) inventory build artifacts / unpacked images (parallel)
+python3 scanner/fjscan_static.py /path/to/artifacts --threads 16
+
+# 2) active probe across many domains, concurrently, callbacks to your Burp Collaborator
+python3 scanner/fjscan_probe.py --collaborator <collab-or-ip> --targets domains.txt --threads 50
+cat domains.txt | python3 scanner/fjscan_probe.py --collaborator <ip> --targets -   # stdin
+
+# 3) bulk payloads for manual testing (one per domain, stable correlation token)
+python3 scanner/fjpayload.py <collab-or-ip> --targets-file domains.txt
+```
+
+`domains.txt` = one target per line — a full `[METHOD ]URL` **or a bare domain**
+(expanded with `--scheme` / `--target-port` / `--path`); `# ` comments allowed:
+```
+api.internal.example
+POST https://svc.example/v1/ingest
+10.0.0.7:8080
+```
+
+### Options
+
+**`fjscan_probe.py`** (active probe)
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--canary-ip <ip>` | — | built-in listener mode; IP of this host as targets see it |
+| `--collaborator <v>` | — | external OOB (IPv4 / int / dot-free host / Collaborator subdomain) |
+| `--targets <file\|->` | — | target list; `-` reads stdin (**required**) |
+| `--threads N` | `20` | concurrent request workers |
+| `--scheme` / `--target-port` / `--path` | `http` / — / `/parse` | how bare domains are expanded |
+| `--method` | `POST` | default HTTP method |
+| `--wrap '{"u":{{P}}}'` | `{{P}}` | nest the probe object inside a field |
+| `--listen-port` / `--port` | `19000` / `80` | built-in canary port / collaborator port |
+| `--wait` / `--timeout` | `10` / `8` | seconds to wait for callbacks / per-request timeout |
+
+**`fjscan_static.py`** (inventory): `<paths…>` · `--threads N` (default `8`) · `--json`
+(machine output; exit code `2` if any `EXPOSED`).
+
+**`fjpayload.py`** (generator): `<collaborator>` · `--targets-file/-f <file\|->` (bulk) ·
+`--port` · `--token` · `--wrap` · `--entry`.
+
+> **Collaborator note:** the sink does `typeName.replace('.','/')`, so **every dot in the host
+> becomes a slash** — a dotted Burp Collaborator subdomain (`abc.oastify.com`) can't be used
+> directly. The tools encode hosts as **decimal integer IPs** and correlate on the unique URL
+> **path token** (Burp shows it in the HTTP interaction). See [`scanner/README.md`](scanner/README.md).
+
+## The lab
+
+**Requirements:** Docker + Docker Compose, and outbound access to Maven Central on the first
+build (to fetch fastjson / spring-boot-loader / asm).
 
 ```bash
 make up          # build + start attacker and target (JDK 8, fastjson 1.2.83)
@@ -58,31 +116,11 @@ runs its `<clinit>` during the `@type` probe, *before* fastjson tries to cast it
 
 | Path | What |
 |---|---|
+| `scanner/` | **defensive** detection you can run on your own fleet |
 | `target/` | vulnerable app — `JSON.parseObject(body, Dto.class)` under a Spring Boot `LaunchedURLClassLoader` |
 | `attacker/` | crafts the `@JSONType` class (`Gen.java`) and serves it as a remote jar |
 | `exploit/` | `exploit.sh` — one-payload PoC + proof |
-| `scanner/` | **defensive** detection you can run on your own fleet (see below) |
 | `docs/MECHANISM.md` | annotated source walk-through |
-
-## Scan your own environment
-
-The [`scanner/`](scanner/) directory ships three dependency-free Python 3 tools:
-
-- **`fjscan_static.py`** — inventory jars/wars for the vulnerable combination
-  (fastjson 1.2.66–83 × Spring Boot fat-jar loader). CI-gate friendly (exit 2 on `EXPOSED`).
-- **`fjscan_probe.py`** — active, **safe** reachability check: fires the `@type` at a canary
-  you control (built-in listener **or** Burp Collaborator / interactsh) and correlates the
-  SSRF callback. Serves nothing → SSRF only, never RCE.
-- **`fjpayload.py`** — generate a ready payload for Burp Repeater with an out-of-band host.
-
-```bash
-python3 scanner/fjscan_static.py /path/to/artifacts
-python3 scanner/fjscan_probe.py --collaborator <your-collab-or-ip> --targets targets.txt
-```
-
-See [`scanner/README.md`](scanner/README.md) — including the important note that a **dotted**
-Collaborator subdomain cannot be used directly (the sink turns dots into slashes), so hosts are
-encoded as integer IPs and correlation is by URL path token.
 
 ## Mitigation
 `-Dfastjson.parser.safeMode=true` · restrict runtime egress · JDK 9+ (RCE→SSRF) · migrate to
