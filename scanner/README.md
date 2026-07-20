@@ -76,8 +76,17 @@ cannot survive the sink.
 result, not a clean bill of health. A browser `User-Agent` is sent by default; add
 `--header 'K: V'` (repeatable, e.g. `Origin`, `Referer`, cookies) and `--baseline '{"a":1}'` to
 send a benign control body per target. If the **baseline** gets a normal app response
-(`200`/`400`/`500`) but the **probe** is blocked, a WAF is filtering the `@type` — try payload
-obfuscation. If **both** are blocked, it's the CDN/path/method, not the app.
+(`200`/`400`/`500`) but the **probe** is blocked, a WAF is filtering the `@type`; if **both** are
+blocked, it's the CDN/path/method, not the app.
+
+When a WAF blocks the `@type`, use **`--evasion`** — fastjson's lexer decodes `\uXXXX` inside
+field names and string values, so an escaped payload still binds while a keyword-matching WAF
+misses it: `ukey` escapes the `@type` key, `uval` escapes the class name, `both` does both.
+```
+python3 fjscan_probe.py --collaborator <sub>.oastify.com --probe-type dns --evasion both \
+    --baseline '{"a":1}' --targets domains.txt
+```
+A DNS callback appearing **only with `--evasion`** = fastjson is present behind a bypassable WAF.
 
 **Bulk payloads for manual Burp testing** — `fjpayload.py --targets-file` emits one payload per
 domain with a stable per-target token (`fj<sha1>`):

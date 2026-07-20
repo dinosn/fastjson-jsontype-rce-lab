@@ -65,6 +65,7 @@ POST https://svc.example/v1/ingest
 | `--threads N` | `20` | concurrent request workers |
 | `--header 'K: V'` | — | extra request header (repeatable); a browser `--user-agent` is sent by default so CDN/WAFs don't `405` a bare client |
 | `--baseline '{"a":1}'` | — | also send a benign control body per target — a normal app response to the baseline but a block on the probe = WAF filtering `@type` |
+| `--evasion {ukey,uval,both}` | `none` | `\uXXXX`-escape the `@type` key / class value (fastjson still decodes it) to bypass a keyword-matching WAF; a callback only with evasion = fastjson behind a bypassable WAF |
 | `--scheme` / `--target-port` / `--path` | `http` / — / `/parse` | how bare domains are expanded |
 | `--method` | `POST` | default HTTP method |
 | `--wrap '{"u":{{P}}}'` | `{{P}}` | nest the probe object inside a field |
