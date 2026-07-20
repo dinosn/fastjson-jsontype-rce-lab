@@ -192,10 +192,19 @@ def main(argv):
         srv = start_canary(args.listen_port)
         print(f"[canary] listening on 0.0.0.0:{args.listen_port}  ({note})")
     else:
-        host, note = encode_host(args.collaborator)
         port = args.port
         srv = None
-        print(f"[collaborator] {note}  -> payload host={host}:{port} (watch Burp/interactsh)")
+        # Only the jsontype probe needs the collaborator resolved to an int-IP. In
+        # pure dns mode we use the hostname RAW, so skip the lookup — otherwise
+        # encode_host() would resolve the BARE collaborator here and show up as a
+        # spurious (self-inflicted) DNS interaction that looks like a callback.
+        if args.probe_type in ("jsontype", "both"):
+            host, note = encode_host(args.collaborator)
+            print(f"[collaborator] {note}  -> jsontype host={host}:{port} (watch Burp/interactsh)")
+        else:
+            host = None
+            print(f"[collaborator] dns probe uses raw host {args.collaborator} "
+                  f"(no local resolution — bare-domain hits in Burp are NOT from targets)")
 
     collab_raw = args.collaborator if args.collaborator else None
     if args.probe_type in ("dns", "both") and not (collab_raw and not collab_raw.isdigit()):
