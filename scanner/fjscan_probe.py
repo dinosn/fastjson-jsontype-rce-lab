@@ -278,8 +278,9 @@ def main(argv):
         for token, (method, url, kind) in token_map.items():
             if kind == "dns":
                 print(f"    DNS/HTTP  {token}.{collab_raw}   <=  {method} {url}")
-            else:
+            elif kind == "jsontype" and host is not None:
                 print(f"    HTTP GET  /{token}  (host {host})   <=  {method} {url}")
+            # baseline jobs are benign controls with no OOB correlation — not listed
         print("\n(dns hits confirm fastjson + egress; jsontype path via int-IP usually will NOT "
               "register in a public Collaborator — see README.)")
         return 0
