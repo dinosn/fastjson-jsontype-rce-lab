@@ -35,10 +35,10 @@ installs). Both scanners are **multithreaded** and take target/domain lists from
 # 1) inventory build artifacts / unpacked images (parallel)
 python3 scanner/fjscan_static.py /path/to/artifacts --threads 16
 
-# 2) active probe across many domains, concurrently, DNS callbacks to your Burp Collaborator
-#    (--probe-type dns is the Collaborator-compatible one; confirms fastjson + egress)
-python3 scanner/fjscan_probe.py --collaborator <sub>.oastify.com --probe-type dns --targets domains.txt --threads 50
-cat domains.txt | python3 scanner/fjscan_probe.py --collaborator <sub>.oastify.com --probe-type dns --targets -
+# 2) active probe across many domains — simplest: --auto fires baseline + plain + WAF-evaded
+#    DNS probes per target and prints a rollup; DNS callbacks land in your Burp Collaborator
+python3 scanner/fjscan_probe.py --collaborator <sub>.oastify.com --auto --targets domains.txt --threads 50
+cat domains.txt | python3 scanner/fjscan_probe.py --collaborator <sub>.oastify.com --auto --targets -
 
 # 3) bulk payloads for manual testing (one per domain, stable correlation token)
 python3 scanner/fjpayload.py <collab-or-ip> --targets-file domains.txt
@@ -58,9 +58,10 @@ POST https://svc.example/v1/ingest
 
 | Flag | Default | Purpose |
 |---|---|---|
+| `--auto` | off | **simplest** — per target send baseline + plain + WAF-evaded DNS probe, print a rollup; just needs `--collaborator` + `--targets` |
 | `--canary-ip <ip>` | — | built-in listener mode; IP of this host as targets see it |
 | `--collaborator <v>` | — | external OOB (IPv4 / int / dot-free host / Collaborator subdomain) |
-| `--probe-type <t>` | `jsontype` | `jsontype` = RCE path (`jar:http` int-IP); `dns` = `Inet4Address` OOB via a **dotted** host (**Collaborator-compatible**, confirms fastjson+egress); `both` |
+| `--probe-type <t>` | `jsontype` | manual mode: `jsontype` = RCE path (`jar:http` int-IP); `dns` = `Inet4Address` OOB via a **dotted** host (**Collaborator-compatible**); `both` |
 | `--targets <file\|->` | — | target list; `-` reads stdin (**required**) |
 | `--threads N` | `20` | concurrent request workers |
 | `--header 'K: V'` | — | extra request header (repeatable); a browser `--user-agent` is sent by default so CDN/WAFs don't `405` a bare client |

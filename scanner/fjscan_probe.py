@@ -164,6 +164,10 @@ def main(argv):
     ap.add_argument("--path", default="/parse", help="path for bare-domain targets (default /parse)")
     ap.add_argument("--method", default="POST", help="default HTTP method (default POST)")
     ap.add_argument("--threads", type=int, default=20, help="concurrent request workers (default 20)")
+    ap.add_argument("--auto", action="store_true",
+                    help="batteries-included mode: per target send a baseline + plain DNS + "
+                         "unicode-evaded DNS probe and print a per-target rollup. Just needs "
+                         "--collaborator <host> and --targets. Ignores --probe-type/--evasion/--wrap.")
     ap.add_argument("--probe-type", choices=["jsontype", "dns", "both"], default="jsontype",
                     help="jsontype = @JSONType jar: RCE-path (int-IP; needs a raw-IP listener); "
                          "dns = Inet4Address OOB via a DOTTED host (Collaborator-compatible, "
@@ -195,27 +199,38 @@ def main(argv):
         port = args.port
         srv = None
         # Only the jsontype probe needs the collaborator resolved to an int-IP. In
-        # pure dns mode we use the hostname RAW, so skip the lookup — otherwise
+        # dns/auto mode we use the hostname RAW, so skip the lookup — otherwise
         # encode_host() would resolve the BARE collaborator here and show up as a
         # spurious (self-inflicted) DNS interaction that looks like a callback.
-        if args.probe_type in ("jsontype", "both"):
+        if (not args.auto) and args.probe_type in ("jsontype", "both"):
             host, note = encode_host(args.collaborator)
             print(f"[collaborator] {note}  -> jsontype host={host}:{port} (watch Burp/interactsh)")
         else:
             host = None
-            print(f"[collaborator] dns probe uses raw host {args.collaborator} "
+            print(f"[collaborator] using raw host {args.collaborator} "
                   f"(no local resolution — bare-domain hits in Burp are NOT from targets)")
 
     collab_raw = args.collaborator if args.collaborator else None
-    if args.probe_type in ("dns", "both") and not (collab_raw and not collab_raw.isdigit()):
-        sys.exit("[!] --probe-type dns/both needs --collaborator set to a hostname "
+    if (args.auto or args.probe_type in ("dns", "both")) and not (collab_raw and not collab_raw.isdigit()):
+        sys.exit("[!] dns/auto mode needs --collaborator set to a hostname "
                  "(e.g. your Burp Collaborator subdomain), not an int/IP.")
 
     targets = load_targets(args.targets, args.scheme, args.target_port, args.path, args.method)
     token_map = {}
     jobs = []
+    baseline_body = args.baseline or '{"fjscan":"baseline"}'
     for i, (method, url) in enumerate(targets):
         base = "%s%s" % (slug(url), os.urandom(2).hex())
+        if args.auto:
+            # batteries-included: baseline control + plain DNS + unicode-evaded DNS
+            btok = "b" + base
+            token_map[btok] = (method, url, "baseline")
+            jobs.append((btok, method, url, baseline_body))
+            for vtag, ev in (("p", "none"), ("e", "both")):
+                tok = "d" + vtag + base
+                token_map[tok] = (method, url, "dns-" + ("plain" if ev == "none" else "evaded"))
+                jobs.append((tok, method, url, make_dns_obj(collab_raw, tok, ev)))
+            continue
         if args.probe_type in ("jsontype", "both"):
             tok = "j" + base
             typ = make_type(host, port, tok)
@@ -243,13 +258,15 @@ def main(argv):
     workers = max(1, min(args.threads, len(jobs) or 1))
     print(f"[*] firing {len(jobs)} request(s) with {workers} thread(s)\n")
     plock = threading.Lock()
+    status_map = {}
 
     def fire(job):
         token, method, url, body = job
         kind = token_map[token][2]
         status = send(method, url, body, hdrs, args.timeout)
         with plock:
-            print(f"    [{kind:8} {token}] {method} {url}  -> {status}")
+            status_map[token] = status
+            print(f"    [{kind:11} {token}] {method} {url}  -> {status}")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         list(pool.map(fire, jobs))
@@ -273,6 +290,25 @@ def main(argv):
         print(f"\nVULNERABLE={vuln}/{len(token_map)}  "
               f"(callback = @JSONType SSRF path reachable)")
         return 2 if vuln else 0
+    elif args.auto:
+        # per-target rollup grouped by URL
+        by_url = {}
+        for tok, (m, u, kind) in token_map.items():
+            by_url.setdefault(u, {})[kind] = tok
+        print("\n===== per-target summary =====")
+        for u, kinds in by_url.items():
+            bl = status_map.get(kinds.get("baseline"), "?")
+            dp_tok, de_tok = kinds.get("dns-plain"), kinds.get("dns-evaded")
+            print(f"  {u}")
+            print(f"      baseline={bl}   dns-plain={status_map.get(dp_tok,'?')}   "
+                  f"dns-evaded={status_map.get(de_tok,'?')}")
+            print(f"      watch Burp for:  {dp_tok}.{collab_raw}   |   {de_tok}.{collab_raw}")
+        print("\nRead it:")
+        print("  * a Burp DNS hit for a d…-token  => that host runs fastjson + has egress = EXPOSED")
+        print("  * baseline reaches the app (2xx/4xx/5xx) but probes blocked + no hit => filtered at")
+        print("    the edge / not reached (inconclusive) — confirm with the artifact check (fjscan_static.py)")
+        print("  * baseline itself blocked => wrong endpoint/shape, not the app")
+        return 0
     else:
         print("\n[*] external mode — correlate these in Burp Collaborator / interactsh:")
         for token, (method, url, kind) in token_map.items():

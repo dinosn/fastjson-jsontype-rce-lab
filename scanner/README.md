@@ -29,6 +29,14 @@ the runtime JDK on the host** (`java -version`; 8 = RCE).
 ### 2. `fjscan_probe.py` — active, SAFE reachability proof
 Sends the crafted `@type` at a canary you control; a callback = the vulnerable path is
 reachable. **Serves nothing (404) → SSRF only, never RCE.** Authorized targets only.
+
+**Simplest usage — `--auto`** (recommended). Point it at a domain list + your Collaborator; it
+fires a baseline + plain DNS + WAF-evaded DNS probe per target and prints a per-target rollup —
+no `--probe-type`/`--evasion`/`--wrap` to reason about:
+```
+python3 fjscan_probe.py --collaborator <sub>.oastify.com --auto --targets domains.txt
+```
+Everything below is the manual/advanced control for when you want a specific probe.
 ```
 # self-contained canary (run on a host targets can reach):
 python3 fjscan_probe.py --canary-ip <this-host-ip> --listen-port 19000 --targets targets.txt
