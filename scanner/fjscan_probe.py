@@ -25,7 +25,8 @@ IPv4/Collaborator subdomains are auto-encoded to a decimal integer; correlation 
 by the unique URL PATH token (Burp shows it). See fjpayload.py header for detail.
 Authorized use only.
 """
-import argparse, concurrent.futures, http.server, ipaddress, os, socket, sys, threading, time, urllib.request
+import argparse, concurrent.futures, http.server, ipaddress, os, socket, sys, threading, time
+import urllib.request, urllib.parse
 
 HITS = {}   # token -> list of (client_ip, request_line)
 LOCK = threading.Lock()
@@ -138,15 +139,27 @@ def load_targets(path, scheme, port, path_suffix, default_method):
     return out
 
 
-def send(method, url, body, headers, timeout):
-    req = urllib.request.Request(url, data=body.encode(), method=method, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return f"HTTP {r.status}"
-    except urllib.error.HTTPError as e:
-        return f"HTTP {e.code}"
-    except Exception as e:
-        return f"send-error: {e.__class__.__name__}"
+def send(method, url, body, headers, timeout, max_redirects=3):
+    # urllib does NOT auto-follow 307/308 for POST, so a plain http:// target that
+    # redirects to https reads as "HTTP 307" and is never actually tested. Follow
+    # redirects manually, preserving the POST body so the probe reaches the app.
+    m, u, seen = method, url, 0
+    while True:
+        req = urllib.request.Request(u, data=body.encode(), method=m, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return f"HTTP {r.status}" + (f" (+{seen}r)" if seen else "")
+        except urllib.error.HTTPError as e:
+            loc = e.headers.get("Location") if e.headers else None
+            if e.code in (301, 302, 303, 307, 308) and loc and seen < max_redirects:
+                seen += 1
+                u = urllib.parse.urljoin(u, loc)
+                if e.code == 303:
+                    m, body = "GET", ""
+                continue
+            return f"HTTP {e.code}" + (f" (+{seen}r)" if seen else "")
+        except Exception as e:
+            return f"send-error: {e.__class__.__name__}"
 
 
 def main(argv):
@@ -187,6 +200,9 @@ def main(argv):
                          "(e.g. '{\"a\":1}') — distinguishes CDN/path 405 from a WAF payload block")
     ap.add_argument("--wrap", default="{{P}}", help="body template; {{P}} = the probe object")
     ap.add_argument("--timeout", type=float, default=8.0)
+    ap.add_argument("--max-redirects", type=int, default=3,
+                    help="follow up to N redirects preserving the POST (0 = don't follow; "
+                         "http->https redirects are otherwise left untested)")
     ap.add_argument("--wait", type=float, default=10.0, help="seconds to wait for callbacks (built-in mode)")
     args = ap.parse_args(argv)
 
@@ -263,7 +279,7 @@ def main(argv):
     def fire(job):
         token, method, url, body = job
         kind = token_map[token][2]
-        status = send(method, url, body, hdrs, args.timeout)
+        status = send(method, url, body, hdrs, args.timeout, args.max_redirects)
         with plock:
             status_map[token] = status
             print(f"    [{kind:11} {token}] {method} {url}  -> {status}")
