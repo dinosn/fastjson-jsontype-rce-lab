@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """
-fjpayload.py — generate the fastjson @JSONType SSRF/RCE probe payload with an
-out-of-band collaborator you control (Burp Collaborator, interactsh, or any
-HTTP listener). Paste the output into Burp Repeater / your request.
+fjpayload.py — generate a Fastjson @JSONType remote-resource reachability body
+for an out-of-band listener you control (Burp Collaborator, interactsh, or a
+private HTTP canary). Paste the output into Burp Repeater / your request.
+
+This generator does not run a listener and cannot guarantee what an external
+collaborator returns. For a non-executing reachability check, use a canary that
+always returns an empty 404 and never serves a class or JAR. Serving compatible
+annotated bytecode can change the impact on a vulnerable target.
 
     fjpayload.py <collaborator> [--port N] [--token T] [--wrap TEMPLATE] [--entry POC]
 

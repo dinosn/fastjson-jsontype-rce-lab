@@ -6,3 +6,8 @@ probe
 probe.jar
 *.log
 .DS_Store
+modern-fd/evidence/
+modern-fd/artifact/target/
+modern-fd/target/target/
+scanner/__pycache__/
+scanner/tests/__pycache__/

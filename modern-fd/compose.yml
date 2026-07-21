@@ -1,0 +1,47 @@
+name: fj-modern-fd
+
+services:
+  artifact:
+    build:
+      context: ./artifact
+    read_only: true
+    user: "65532:65532"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.50
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=8m,uid=65532,gid=65532,mode=1777
+    networks: [fdlab]
+
+  target:
+    build:
+      context: ./target
+    depends_on: [artifact]
+    read_only: true
+    user: "65532:65532"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.00
+    environment:
+      JAVA_TOOL_OPTIONS: >-
+        -Djava.io.tmpdir=/tmp
+        -Dlab.safeMode=${LAB_SAFE_MODE:-false}
+        -XX:MaxRAMPercentage=70
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=96m,uid=65532,gid=65532,mode=1777
+    ports:
+      - "127.0.0.1:${LAB_PORT:-18080}:8080"
+    networks: [fdlab]
+
+networks:
+  fdlab:
+    internal: true
