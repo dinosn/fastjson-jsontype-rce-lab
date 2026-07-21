@@ -21,6 +21,29 @@ This repository now preserves two distinct Fastjson research tracks:
 > a fixed DTO containing `List<Object>`. Binding alone is therefore not a
 > mitigation. Full walk-through: [`docs/MECHANISM.md`](docs/MECHANISM.md).
 
+## Security review findings
+
+The companion whole-project review covered 2,041 callable/static-initializer rows
+across all 193 Fastjson 1.2.83 production Java files. The table below prioritizes
+the highest-impact results; it is not a claim that every Fastjson deployment is
+affected. This repository directly reproduces **F105**. The remaining entries
+summarize separately sealed source review and bounded lab evidence.
+
+| Priority | Finding | Proven result | Important boundary |
+|---:|---|---|---|
+| 1 | **F105 — remote `@JSONType` bytecode execution** | Attacker-supplied class initialization through compatible Spring Boot loaders, including the JDK 8 direct route and the Linux/JDK 17 retained-JAR `/proc/self/fd/N` continuation | Requires an Object-typed body lane, compatible Boot/TCCL loader, egress, SafeMode/IgnoreAutoType off, and an exact attacker JAR; not universal across every JDK, loader, or OS |
+| 2 | **F1/F45 — TemplatesImpl command execution** | Marker command execution through the fixed-DTO API, including an ignored body property | Requires weakened server policy: class admission, AutoType, and private-field population or equivalent paths; pristine defaults block it |
+| 3 | **F70/C016 — unbounded buffering and GZIP expansion** | Typed byte/InputStream and annotated DTO paths expand or buffer without an output cap; constrained-heap Java OOME was reproduced | Endpoint/schema and attacker-byte reachability are required; production-wide outage was not established |
+| 4 | **F18/C089 — parser-thread stack exhaustion** | Deeply nested ordinary object values can produce `StackOverflowError` under default parsing | Request-thread availability impact; not an invariant JVM or service-wide crash |
+| 5 | **F120/C162 — fixed-schema HTTP SSRF/local-resource loading** | Body-controlled `JEditorPane`/`JTextPane.page` performs HTTP requests and can load bounded `file:` content into Document state | Requires the application to declare the Swing type; no automatic response exfiltration or RCE was proven |
+| 6 | **F118/C160 — hash-collision authorization/data-integrity failure** | A distinct Unicode FNV-1a-64 collision can bind to a privileged enum constant or route JSONPath mutation to the wrong bean setter | Requires a usable collision and downstream trust or an exposed JSONPath mutation operation; no class admission or RCE |
+| 7 | **F121/C163 — fixed JdbcRowSet JNDI reachability** | Exact setter order caused one body-selected outbound JNDI/LDAP connection | Evidence stops at a connection: no naming response, object factory, bytecode loading, or RCE |
+| 8 | **F2/F45 — default DNS resolution** | Attacker-controlled hostname resolution works under default configuration and through an ignored fixed-DTO property | DNS/OOB interaction only, not generic HTTP SSRF or RCE |
+
+See [`findings/FINDINGS.md`](findings/FINDINGS.md) for validation labels,
+prerequisites, lower-tier findings, remediation priorities, and explicit negative
+boundaries.
+
 ## ⚠️ Authorized use only
 
 This repository is for **education, defensive research, and authorized testing** of systems
@@ -178,6 +201,7 @@ runs its `<clinit>` during the `@type` probe, *before* fastjson tries to cast it
 | `attacker/` | legacy command-capable JDK 8 class generator and JAR server |
 | `exploit/` | legacy `exploit.sh` proof |
 | `docs/MECHANISM.md` | annotated source walk-through |
+| `findings/FINDINGS.md` | prioritized whole-project findings, prerequisites and remediation boundaries |
 
 ## Mitigation
 
