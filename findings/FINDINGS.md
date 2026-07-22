@@ -21,7 +21,7 @@ they are not all implemented as runnable cases in this repository.
 
 | Priority | Finding | Practical severity | Validation | Proven result | Important boundary |
 |---:|---|---|---|---|---|
-| 1 | **F105 — remote `@JSONType` bytecode execution** | Critical, conditional | Proven in controlled labs and independently reproduced | Attacker-supplied class initialization through compatible Spring Boot loaders, including the JDK 8 direct route and the Linux/JDK 17 retained-JAR `/proc/self/fd/N` continuation | Requires an Object-typed body lane, compatible Boot/TCCL loader, egress, SafeMode/IgnoreAutoType off, and an exact attacker JAR; not universal across every JDK, loader, or OS |
+| 1 | **F105 — remote `@JSONType` bytecode execution** | Critical, conditional | Proven in controlled labs and independently reproduced | Attacker-supplied class initialization through compatible Spring Boot loaders, including the JDK 8 direct route and the Linux/JDK 17 retained-JAR `/proc/self/fd/N` continuation | Requires a parser-reachable `@type` carrier, compatible Boot/TCCL loader, egress, SafeMode/IgnoreAutoType off, and an exact attacker JAR. The modern fixed-DTO route additionally needs a generic value lane (the lab uses `List<Object>`), Linux procfs, a retained descriptor and exact name alignment; not universal across every JDK, loader, or OS |
 | 2 | **F1/F45 — TemplatesImpl command execution** | Critical, configuration-gated | Proven in controlled labs | Marker command execution through `JSON.parseObject(body, Dto.class)`, including an ignored body property | Requires class admission, AutoType, and private-field population or equivalent server-side paths; pristine Fastjson 1.2.83 defaults block the tested chain |
 | 3 | **F70/C016 — unbounded buffering and GZIP expansion** | High availability risk when exposed | Proven in bounded allocation labs and independent source review | Typed byte/InputStream and annotated DTO paths expand or buffer without an output cap; constrained-heap Java OOME was reproduced | Endpoint/schema and attacker-byte reachability are required; no production-wide outage or concurrency claim was established |
 | 4 | **F18/C089 — parser-thread stack exhaustion** | High/Medium availability risk | Proven in controlled labs | Deeply nested ordinary object values can produce a parser-thread `StackOverflowError` under default parsing | Request-thread failure was shown; an invariant JVM crash or measured service-wide outage was not |
@@ -34,11 +34,12 @@ they are not all implemented as runnable cases in this repository.
 
 ### F105 — conditional body-only remote bytecode execution
 
-The literal fixed-DTO boundary is not a side-effect boundary. In the proven
+A fixed target class is not by itself a side-effect boundary. In the proven
 Spring Boot loader topologies, `JSON.parseObject(body, Dto.class)` reaches
-attacker-supplied annotated class bytes before or during final binding. An
-ignored-property carrier can execute the initializer and still return the
-declared DTO normally.
+attacker-supplied annotated class bytes before or during final binding. The
+classic JDK 8 lane can carry the value through an ignored property and return
+the declared DTO normally; the modern lab uses a declared `List<Object>` field
+and also returns the normally bound DTO.
 
 Two distinct routes were reproduced:
 
@@ -48,12 +49,22 @@ Two distinct routes were reproduced:
   descriptor and later load an exact annotated class through
   `/proc/self/fd/N` in the same body.
 
-The common prerequisites are a body-controlled Object-typed lane, a compatible
+The common prerequisites are a parser-reachable `@type` carrier, a compatible
 Boot/TCCL resource loader, outbound reachability, SafeMode and IgnoreAutoType
-disabled, and an exact attacker-controlled JAR. The modern route additionally
-depends on Linux procfs, descriptor retention/range, and exact class-name and
-annotation alignment. Plain AppClassLoader, arbitrary JDK/OS portability, and
-every servlet container were not proven.
+disabled, and an exact attacker-controlled JAR. The modern fixed-DTO route
+additionally requires a body-controlled generic value lane (the reproduced DTO
+uses `List<Object>`), Linux procfs, descriptor retention/range,
+and exact class-name and annotation alignment. The classic JDK 8 root carrier
+does not require a server-declared polymorphic base. Plain AppClassLoader,
+arbitrary JDK/OS portability, and every servlet container were not proven.
+
+The [FearsOff technical disclosure](https://fearsoff.org/research/fastjson-1-2-83-rce)
+shows the original mechanism and a JDK 21 process-persistent, multi-request FD
+sweep. Alibaba's
+[maintainer advisory](https://github.com/alibaba/fastjson2/wiki/Security-Advisory%3A-Remote-Code-Execution-in-fastjson-1.2.68%E2%80%931.2.83)
+reports a broader Fastjson, Spring Boot and JDK matrix. Those are external
+results; this repository's direct end-to-end runtime evidence remains Fastjson
+1.2.83 on its documented JDK 8 and single-body JDK 17 lanes.
 
 ### F1/F45 — configuration-gated TemplatesImpl execution
 

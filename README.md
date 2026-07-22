@@ -31,7 +31,7 @@ summarize separately sealed source review and bounded lab evidence.
 
 | Priority | Finding | Proven result | Important boundary |
 |---:|---|---|---|
-| 1 | **F105 — remote `@JSONType` bytecode execution** | Attacker-supplied class initialization through compatible Spring Boot loaders, including the JDK 8 direct route and the Linux/JDK 17 retained-JAR `/proc/self/fd/N` continuation | Requires an Object-typed body lane, compatible Boot/TCCL loader, egress, SafeMode/IgnoreAutoType off, and an exact attacker JAR; not universal across every JDK, loader, or OS |
+| 1 | **F105 — remote `@JSONType` bytecode execution** | Attacker-supplied class initialization through compatible Spring Boot loaders, including the JDK 8 direct route and the Linux/JDK 17 retained-JAR `/proc/self/fd/N` continuation | Requires a parser-reachable `@type` carrier, compatible Boot/TCCL loader, egress, SafeMode/IgnoreAutoType off, and an exact attacker JAR. The modern fixed-DTO route additionally needs a generic value lane (the lab uses `List<Object>`), Linux procfs, a retained descriptor and exact name alignment; not universal across every JDK, loader, or OS |
 | 2 | **F1/F45 — TemplatesImpl command execution** | Marker command execution through the fixed-DTO API, including an ignored body property | Requires weakened server policy: class admission, AutoType, and private-field population or equivalent paths; pristine defaults block it |
 | 3 | **F70/C016 — unbounded buffering and GZIP expansion** | Typed byte/InputStream and annotated DTO paths expand or buffer without an output cap; constrained-heap Java OOME was reproduced | Endpoint/schema and attacker-byte reachability are required; production-wide outage was not established |
 | 4 | **F18/C089 — parser-thread stack exhaustion** | Deeply nested ordinary object values can produce `StackOverflowError` under default parsing | Request-thread availability impact; not an invariant JVM or service-wide crash |
@@ -155,6 +155,12 @@ request, response, container metadata, logs and SHA-256 manifest.
 Controls cover ordinary JSON, FD candidates without a seed, a seed followed by
 impossible descriptors, and SafeMode. See [`modern-fd/README.md`](modern-fd/README.md).
 
+The FearsOff disclosure shows the same retained-JAR terminal on JDK 21 using a
+process-persistent cache and one FD candidate per request. This repository's
+modern lab instead reproduces a single-body JDK 17 composition: the failure-soft
+seed and bounded FD candidates are carried by one fixed-DTO request. JDK 21
+remains externally reported; it is not a runtime result produced here.
+
 ## Legacy JDK 8 direct-class lab
 
 The original top-level Compose project remains available for reproducing the
@@ -205,16 +211,26 @@ runs its `<clinit>` during the `@type` probe, *before* fastjson tries to cast it
 
 ## Mitigation
 
-Enable `-Dfastjson.parser.safeMode=true` on the ordinary handler-free path and
-audit installed `AutoTypeCheckHandler`s; restrict JVM egress; migrate untrusted
-parsing away from Fastjson 1.x; alert on decoded `@type` remote-JAR seeds and
-dense `/proc/self/fd` or `/dev/fd` sequences. DTO binding and JDK 9+ are not
+Enable `-Dfastjson.parser.safeMode=true` on the ordinary handler-free path or
+use the vendor's `com.alibaba:fastjson:1.2.83_noneautotype` build where immediate
+migration is not possible, and audit installed `AutoTypeCheckHandler`s. Restrict
+JVM egress; migrate untrusted parsing away from Fastjson 1.x; alert on decoded
+`@type` remote-JAR seeds and `/proc/self/fd` or `/dev/fd` candidates both within
+one request and correlated across requests. DTO binding and JDK 9+ are not
 complete mitigations for the modern composition.
 
 ## Credits & references
 
-- **Original disclosure:** Kirill Firsov (**@k_firsov**, FearsOff) — public claim of a
-  gadget-free RCE in fastjson 1.2.83 (July 2026).
+- **Original disclosure and technical post:** Kirill Firsov (**@k_firsov**, FearsOff) —
+  [FastJson 1.2.83 Remote Code Execution](https://fearsoff.org/research/fastjson-1-2-83-rce)
+  (July 21, 2026). It discloses the same JDK 8 direct-class and modern retained-JAR
+  `/proc/self/fd` mechanisms reconstructed here.
+- **Maintainer advisory:** Alibaba —
+  [Security Advisory: Remote Code Execution in fastjson 1.2.68–1.2.83](https://github.com/alibaba/fastjson2/wiki/Security-Advisory%3A-Remote-Code-Execution-in-fastjson-1.2.68%E2%80%931.2.83).
+  It reports typed-API reachability plus verification across Spring Boot 2.x–4.x
+  and JDK 8/11/17/21. Those wider version/runtime matrices are upstream-reported;
+  this repository's runtime proof remains Fastjson 1.2.83 on the documented JDK
+  8 and JDK 17 lanes.
 - **Public proof-of-concept & the `@JSONType` / jar-URL-internal-name technique:**
   **@wouijvziqy** — <https://github.com/wouijvziqy/Fastjson-JsonType-RCE-PoC>.
   `attacker/Gen.java` re-implements that technique for this lab.

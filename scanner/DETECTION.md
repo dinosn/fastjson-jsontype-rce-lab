@@ -60,6 +60,14 @@ Inspect the parsed JSON tree, not only raw bytes:
    values, especially a consecutive or near-consecutive range.
 5. Treat a dense FD-only request as a possible second stage: the JAR cache is
    process-global and may have been seeded by an earlier request.
+6. Correlate repeated individual FD candidates across requests to the same
+   service/process after a remote seed. The public FearsOff disclosure describes
+   a process-persistent sweep with one candidate number per request.
+
+`fjdetect.py` evaluates each JSON document independently and intentionally keeps
+no cross-record state. Implement the final correlation step in the gateway,
+SIEM, or runtime telemetry layer where source, destination, process and time
+window are available.
 
 Do not rely on a literal raw-body search for `@type`. JSON `\uXXXX` escapes are
 decoded before Fastjson handles special keys, duplicate keys can be processed in
